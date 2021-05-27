@@ -72,94 +72,123 @@ synology_dsm_deploy() {
     return 1
   fi
 
-  _base_url="$SYNO_Scheme://$SYNO_Hostname:$SYNO_Port"
-  _debug _base_url "$_base_url"
+  _err_code=0
+  for hostname in $SYNO_Hostname; do
+    _base_url="$SYNO_Scheme://$hostname:$SYNO_Port"
+    _debug _base_url "$_base_url"
 
-  _debug "Getting API version"
-  response=$(_get "$_base_url/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth")
-  api_version=$(echo "$response" | grep "SYNO.API.Auth" | sed -n 's/.*"maxVersion" *: *\([0-9]*\).*/\1/p')
-  _debug3 response "$response"
-  _debug3 api_version "$api_version"
-
-  # Login, get the token from JSON and session id from cookie
-  _info "Logging into $SYNO_Hostname:$SYNO_Port"
-  encoded_username="$(printf "%s" "$SYNO_Username" | _url_encode)"
-  encoded_password="$(printf "%s" "$SYNO_Password" | _url_encode)"
-
-  if [ -n "$SYNO_DID" ]; then
-    _H1="Cookie: did=$SYNO_DID"
-    export _H1
-    _debug3 H1 "${_H1}"
-  fi
-
-  response=$(_post "method=login&account=$encoded_username&passwd=$encoded_password&api=SYNO.API.Auth&version=$api_version&enable_syno_token=yes" "$_base_url/webapi/auth.cgi?enable_syno_token=yes")
-  token=$(echo "$response" | grep "synotoken" | sed -n 's/.*"synotoken" *: *"\([^"]*\).*/\1/p')
-  _debug3 response "$response"
-  _debug token "$token"
-
-  if [ -z "$token" ]; then
-    _err "Unable to authenticate to $SYNO_Hostname:$SYNO_Port using $SYNO_Scheme."
-    _err "Check your username and password."
-    return 1
-  fi
-  sid=$(echo "$response" | grep "sid" | sed -n 's/.*"sid" *: *"\([^"]*\).*/\1/p')
-
-  _H1="X-SYNO-TOKEN: $token"
-  export _H1
-  _debug2 H1 "${_H1}"
-
-  # Now that we know the username and password are good, save them
-  _savedeployconf SYNO_Username "$SYNO_Username"
-  _savedeployconf SYNO_Password "$SYNO_Password"
-  _savedeployconf SYNO_DID "$SYNO_DID"
-
-  _info "Getting certificates in Synology DSM"
-  response=$(_post "api=SYNO.Core.Certificate.CRT&method=list&version=1&_sid=$sid" "$_base_url/webapi/entry.cgi")
-  _debug3 response "$response"
-  escaped_certificate="$(printf "%s" "$SYNO_Certificate" | sed 's/\([].*^$[]\)/\\\1/g;s/"/\\\\"/g')"
-  _debug escaped_certificate "$escaped_certificate"
-  id=$(echo "$response" | sed -n "s/.*\"desc\":\"$escaped_certificate\",\"id\":\"\([^\"]*\).*/\1/p")
-  _debug2 id "$id"
-
-  if [ -z "$id" ] && [ -z "${SYNO_Create:-}" ]; then
-    _err "Unable to find certificate: $SYNO_Certificate and \$SYNO_Create is not set"
-    return 1
-  fi
-
-  # we've verified this certificate description is a thing, so save it
-  _savedeployconf SYNO_Certificate "$SYNO_Certificate" "base64"
-
-  _info "Generate form POST request"
-  nl="\0015\0012"
-  delim="--------------------------$(_utc_date | tr -d -- '-: ')"
-  content="--$delim${nl}Content-Disposition: form-data; name=\"key\"; filename=\"$(basename "$_ckey")\"${nl}Content-Type: application/octet-stream${nl}${nl}$(cat "$_ckey")\0012"
-  content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"cert\"; filename=\"$(basename "$_ccert")\"${nl}Content-Type: application/octet-stream${nl}${nl}$(cat "$_ccert")\0012"
-  content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"inter_cert\"; filename=\"$(basename "$_cca")\"${nl}Content-Type: application/octet-stream${nl}${nl}$(cat "$_cca")\0012"
-  content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"id\"${nl}${nl}$id"
-  content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"desc\"${nl}${nl}${SYNO_Certificate}"
-  if echo "$response" | sed -n "s/.*\"desc\":\"$escaped_certificate\",\([^{]*\).*/\1/p" | grep -- 'is_default":true' >/dev/null; then
-    _debug2 default "this is the default certificate"
-    content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"as_default\"${nl}${nl}true"
-  else
-    _debug2 default "this is NOT the default certificate"
-  fi
-  content="$content${nl}--$delim--${nl}"
-  content="$(printf "%b_" "$content")"
-  content="${content%_}" # protect trailing \n
-
-  _info "Upload certificate to the Synology DSM"
-  response=$(_post "$content" "$_base_url/webapi/entry.cgi?api=SYNO.Core.Certificate&method=import&version=1&SynoToken=$token&_sid=$sid" "" "POST" "multipart/form-data; boundary=${delim}")
-  _debug3 response "$response"
-
-  if ! echo "$response" | grep '"error":' >/dev/null; then
-    if echo "$response" | grep '"restart_httpd":true' >/dev/null; then
-      _info "http services were restarted"
-    else
-      _info "http services were NOT restarted"
+    _debug "Getting API version"
+    response=$(_get "$_base_url/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth")
+    retcode=$?
+    if [ $retcode  != 0 ]; then
+      _err "Error connecting to $_base_url, error code $retcode"
+      _err_code=1
+      continue
     fi
-    return 0
-  else
-    _err "Unable to update certificate, error code $response"
-    return 1
-  fi
+    api_version=$(echo "$response" | grep "SYNO.API.Auth" | sed -n 's/.*"maxVersion" *: *\([0-9]*\).*/\1/p')
+    _debug3 response "$response"
+    _debug3 api_version "$api_version"
+
+    # Login, get the token from JSON and session id from cookie
+    _info "Logging into $_base_url"
+    encoded_username="$(printf "%s" "$SYNO_Username" | _url_encode)"
+    encoded_password="$(printf "%s" "$SYNO_Password" | _url_encode)"
+
+    if [ -n "$SYNO_DID" ]; then
+      _H1="Cookie: did=$SYNO_DID"
+      export _H1
+      _debug3 H1 "${_H1}"
+    fi
+
+    response=$(_post "method=login&account=$encoded_username&passwd=$encoded_password&api=SYNO.API.Auth&version=$api_version&enable_syno_token=yes" "$_base_url/webapi/auth.cgi?enable_syno_token=yes")
+    retcode=$?
+    if [ $retcode  != 0 ]; then
+      _err "Error connecting to $_base_url, error code $retcode"
+      _err_code=1
+      continue
+    fi
+    token=$(echo "$response" | grep "synotoken" | sed -n 's/.*"synotoken" *: *"\([^"]*\).*/\1/p')
+    _debug3 response "$response"
+    _debug token "$token"
+
+    if [ -z "$token" ]; then
+      _err "Unable to authenticate to $_base_url."
+      _err "Check your username and password."
+      _err_code=1
+      continue
+    fi
+    sid=$(echo "$response" | grep "sid" | sed -n 's/.*"sid" *: *"\([^"]*\).*/\1/p')
+
+    _H1="X-SYNO-TOKEN: $token"
+    export _H1
+    _debug2 H1 "${_H1}"
+
+    # Now that we know the username and password are good, save them
+    _savedeployconf SYNO_Username "$SYNO_Username"
+    _savedeployconf SYNO_Password "$SYNO_Password"
+    _savedeployconf SYNO_DID "$SYNO_DID"
+
+    _info "Getting certificates in Synology DSM"
+    response=$(_post "api=SYNO.Core.Certificate.CRT&method=list&version=1&_sid=$sid" "$_base_url/webapi/entry.cgi")
+    retcode=$?
+    if [ $retcode  != 0 ]; then
+      _err "Error connecting to $_base_url, error code $retcode"
+      _err_code=1
+      continue
+    fi
+    _debug3 response "$response"
+    escaped_certificate="$(printf "%s" "$SYNO_Certificate" | sed 's/\([].*^$[]\)/\\\1/g;s/"/\\\\"/g')"
+    _debug escaped_certificate "$escaped_certificate"
+    id=$(echo "$response" | sed -n "s/.*\"desc\":\"$escaped_certificate\",\"id\":\"\([^\"]*\).*/\1/p")
+    _debug2 id "$id"
+
+    if [ -z "$id" ] && [ -z "${SYNO_Create:-}" ]; then
+      _err "Unable to find certificate: \"$SYNO_Certificate\" on $hostname and \$SYNO_Create is not set"
+      _err_code=1
+      continue
+    fi
+
+    # we've verified this certificate description is a thing, so save it
+    _savedeployconf SYNO_Certificate "$SYNO_Certificate" "base64"
+
+    _info "Generate form POST request"
+    nl="\0015\0012"
+    delim="--------------------------$(_utc_date | tr -d -- '-: ')"
+    content="--$delim${nl}Content-Disposition: form-data; name=\"key\"; filename=\"$(basename "$_ckey")\"${nl}Content-Type: application/octet-stream${nl}${nl}$(cat "$_ckey")\0012"
+    content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"cert\"; filename=\"$(basename "$_ccert")\"${nl}Content-Type: application/octet-stream${nl}${nl}$(cat "$_ccert")\0012"
+    content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"inter_cert\"; filename=\"$(basename "$_cca")\"${nl}Content-Type: application/octet-stream${nl}${nl}$(cat "$_cca")\0012"
+    content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"id\"${nl}${nl}$id"
+    content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"desc\"${nl}${nl}${SYNO_Certificate}"
+    if echo "$response" | sed -n "s/.*\"desc\":\"$escaped_certificate\",\([^{]*\).*/\1/p" | grep -- 'is_default":true' >/dev/null; then
+      _debug2 default "this is the default certificate"
+      content="$content${nl}--$delim${nl}Content-Disposition: form-data; name=\"as_default\"${nl}${nl}true"
+    else
+      _debug2 default "this is NOT the default certificate"
+    fi
+    content="$content${nl}--$delim--${nl}"
+    content="$(printf "%b_" "$content")"
+    content="${content%_}" # protect trailing \n
+
+    _info "Upload certificate to the Synology DSM"
+    response=$(_post "$content" "$_base_url/webapi/entry.cgi?api=SYNO.Core.Certificate&method=import&version=1&SynoToken=$token&_sid=$sid" "" "POST" "multipart/form-data; boundary=${delim}")
+    retcode=$?
+    if [ $retcode  != 0 ]; then
+      _err "Error connecting to $_base_url, error code $retcode"
+      _err_code=1
+      continue
+    fi
+    _debug3 response "$response"
+
+    if ! echo "$response" | grep '"error":' >/dev/null; then
+      if echo "$response" | grep '"restart_httpd":true' >/dev/null; then
+        _info "http services were restarted"
+      else
+        _info "http services were NOT restarted"
+      fi
+    else
+      _err "Unable to update certificate on $hostname, error code $response"
+      _err_code=1
+    fi
+  done
+  return $_err_code
 }
