@@ -80,7 +80,7 @@ synology_dsm_deploy() {
     _debug "Getting API version"
     response=$(_get "$_base_url/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth")
     retcode=$?
-    if [ $retcode  != 0 ]; then
+    if [ $retcode != 0 ]; then
       _err "Error connecting to $_base_url, error code $retcode"
       _err_code=1
       continue
@@ -102,7 +102,7 @@ synology_dsm_deploy() {
 
     response=$(_post "method=login&account=$encoded_username&passwd=$encoded_password&api=SYNO.API.Auth&version=$api_version&enable_syno_token=yes" "$_base_url/webapi/auth.cgi?enable_syno_token=yes")
     retcode=$?
-    if [ $retcode  != 0 ]; then
+    if [ $retcode != 0 ]; then
       _err "Error connecting to $_base_url, error code $retcode"
       _err_code=1
       continue
@@ -131,7 +131,7 @@ synology_dsm_deploy() {
     _info "Getting certificates in Synology DSM"
     response=$(_post "api=SYNO.Core.Certificate.CRT&method=list&version=1&_sid=$sid" "$_base_url/webapi/entry.cgi")
     retcode=$?
-    if [ $retcode  != 0 ]; then
+    if [ $retcode != 0 ]; then
       _err "Error connecting to $_base_url, error code $retcode"
       _err_code=1
       continue
@@ -172,7 +172,7 @@ synology_dsm_deploy() {
     _info "Upload certificate to the Synology DSM"
     response=$(_post "$content" "$_base_url/webapi/entry.cgi?api=SYNO.Core.Certificate&method=import&version=1&SynoToken=$token&_sid=$sid" "" "POST" "multipart/form-data; boundary=${delim}")
     retcode=$?
-    if [ $retcode  != 0 ]; then
+    if [ $retcode != 0 ]; then
       _err "Error connecting to $_base_url, error code $retcode"
       _err_code=1
       continue
